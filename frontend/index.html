@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Type S</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      /* Force dark mode immediately - NieR Automata theme */
+      html, body {
+        background-color: #000000 !important;
+      }
+      html.dark, body.dark {
+        background-color: #000000 !important;
+      }
+    </style>
+    <script>
+      // Force dark mode before React loads
+      document.documentElement.classList.add('dark');
+      if (document.body) {
+        document.body.classList.add('dark');
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          document.body?.classList.add('dark');
+        }, { once: true });
+      }
+      localStorage.setItem('theme', 'dark');
+    </script>
+  </head>
+  <body class="dark">
+    <div id="root"></div>
+    <script type="module" src="/src/index.jsx"></script>
+  </body>
+</html>

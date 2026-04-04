@@ -1,0 +1,12 @@
+fastapi
+pydantic
+uvicorn
+pyjwt
+passlib[argon2]
+sqlalchemy
+python-dotenv
+python-jose
+pymongo
+motor
+bcrypt==3.2.2
+openai
