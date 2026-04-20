@@ -1,11 +1,13 @@
 import asyncio
+import shutil
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.schemas.common import ApprovalMode, TaskStatus, TaskType
 from app.schemas.tasks import TaskCreateRequest
+from app.services.artifacts import ARTIFACTS_ROOT
 from app.services.tasks import TaskService
-from app.services.worker import TaskWorkerService
+from app.services.worker import PNG_SIGNATURE, TaskWorkerService
 from tests.base import AsyncMongoTestCase
 
 
@@ -49,6 +51,55 @@ class TaskWorkerServiceTests(AsyncMongoTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.task_service = TaskService(self.database)
+
+    async def asyncTearDown(self):
+        shutil.rmtree(ARTIFACTS_ROOT / self.project_id, ignore_errors=True)
+        await super().asyncTearDown()
+
+    async def test_extract_screenshot_storage_key_normalizes_httpx_relative_paths(self):
+        task_id = "task_capture"
+        screenshot_path = (
+            ARTIFACTS_ROOT
+            / self.project_id
+            / task_id
+            / "screenshot"
+            / "www.example.com_443"
+            / "hash.png"
+        )
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_path.write_bytes(PNG_SIGNATURE + b"fake-png")
+
+        storage_key = TaskWorkerService._extract_screenshot_storage_key(
+            {"screenshot_path_rel": "www.example.com_443/hash.png"},
+            project_id=self.project_id,
+            task_id=task_id,
+        )
+
+        self.assertEqual(
+            storage_key,
+            f"{self.project_id}/{task_id}/screenshot/www.example.com_443/hash.png",
+        )
+
+    async def test_extract_screenshot_storage_key_ignores_empty_png_files(self):
+        task_id = "task_empty_capture"
+        screenshot_path = (
+            ARTIFACTS_ROOT
+            / self.project_id
+            / task_id
+            / "screenshot"
+            / "www.example.com_443"
+            / "empty.png"
+        )
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_path.write_bytes(b"")
+
+        storage_key = TaskWorkerService._extract_screenshot_storage_key(
+            {"screenshot_path": str(screenshot_path)},
+            project_id=self.project_id,
+            task_id=task_id,
+        )
+
+        self.assertIsNone(storage_key)
 
     async def test_running_task_cancellation_stops_worker_and_marks_task_cancelled(self):
         created_task = await self.task_service.create_task(

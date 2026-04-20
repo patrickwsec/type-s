@@ -5,6 +5,7 @@ import os
 import socket
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -21,6 +22,10 @@ from app.services.task_catalog import SUPPORTED_TASK_TYPES
 
 WORKER_NAME = "fastapi-background-worker"
 logger = logging.getLogger(__name__)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+HTTPX_SCREENSHOT_THREADS = int(os.getenv("V2_HTTPX_SCREENSHOT_THREADS", "5"))
+HTTPX_SCREENSHOT_TIMEOUT = int(os.getenv("V2_HTTPX_SCREENSHOT_TIMEOUT", "30"))
+HTTPX_SCREENSHOT_IDLE = int(os.getenv("V2_HTTPX_SCREENSHOT_IDLE", "2"))
 
 # Mapping from nmap service names → nuclei template tags.
 # Used to auto-select templates based on discovered services.
@@ -76,6 +81,16 @@ _SERVICE_TAG_MAP: dict[str, list[str]] = {
 _SSL_SERVICES = frozenset({"https", "https-alt", "ssl", "smtps", "pop3s", "imaps", "ldaps"})
 # Services that speak plain HTTP.
 _HTTP_SERVICES = frozenset({"http", "http-alt", "http-proxy", "https", "https-alt"})
+
+
+def _is_valid_screenshot_file(path: Path) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size <= len(PNG_SIGNATURE):
+            return False
+        with path.open("rb") as screenshot_file:
+            return screenshot_file.read(len(PNG_SIGNATURE)) == PNG_SIGNATURE
+    except OSError:
+        return False
 
 
 class TaskCancelledError(RuntimeError):
@@ -736,6 +751,9 @@ class TaskWorkerService:
                     hostname = parts[0] if len(parts) == 2 and parts[1].isdigit() else dir_name
 
                     for png_file in hostname_dir.glob("*.png"):
+                        if not _is_valid_screenshot_file(png_file):
+                            continue
+
                         # storage_key is relative to ARTIFACTS_ROOT
                         storage_key = str(png_file.relative_to(ARTIFACTS_ROOT))
                         asset_id = asset_id_by_hostname.get(hostname)
@@ -975,6 +993,14 @@ class TaskWorkerService:
                     [
                         "-screenshot",
                         "-system-chrome",
+                        "-screenshot-timeout",
+                        str(HTTPX_SCREENSHOT_TIMEOUT),
+                        "-screenshot-idle",
+                        str(HTTPX_SCREENSHOT_IDLE),
+                        "-exclude-screenshot-bytes",
+                        "-exclude-headless-body",
+                        "-threads",
+                        str(HTTPX_SCREENSHOT_THREADS),
                         "-srd",
                         str(screenshot_root),
                     ]
@@ -1322,19 +1348,36 @@ class TaskWorkerService:
         if not screenshot_path:
             return None
 
-        screenshot_path = str(screenshot_path)
-        artifact_root = str(ARTIFACTS_ROOT / project_id / task_id)
-        if screenshot_path.startswith(artifact_root):
-            relative_path = screenshot_path.replace(f"{artifact_root}/", "", 1)
-            return f"{project_id}/{task_id}/{relative_path}"
+        screenshot_path = str(screenshot_path).strip().replace("\\", "/")
+        if not screenshot_path:
+            return None
+
+        artifact_task_root = (ARTIFACTS_ROOT / project_id / task_id).resolve()
+        try:
+            path = Path(screenshot_path)
+            if path.is_absolute():
+                screenshot_path = path.resolve().relative_to(artifact_task_root).as_posix()
+        except (OSError, ValueError):
+            pass
+
+        artifact_root = str(ARTIFACTS_ROOT / project_id / task_id).replace("\\", "/")
+        if screenshot_path.startswith(f"{artifact_root}/"):
+            screenshot_path = screenshot_path.replace(f"{artifact_root}/", "", 1)
         if screenshot_path.startswith("./"):
             screenshot_path = screenshot_path[2:]
-        if screenshot_path.startswith("screenshot/"):
-            return f"{project_id}/{task_id}/{screenshot_path}"
         if f"{project_id}/{task_id}/" in screenshot_path:
-            relative_path = screenshot_path.split(f"{project_id}/{task_id}/", 1)[-1]
-            return f"{project_id}/{task_id}/{relative_path}"
-        return f"{project_id}/{task_id}/{screenshot_path.split('/screenshot/', 1)[-1] if '/screenshot/' in screenshot_path else screenshot_path}"
+            screenshot_path = screenshot_path.split(f"{project_id}/{task_id}/", 1)[-1]
+
+        if screenshot_path.startswith("screenshot/"):
+            relative_path = screenshot_path
+        elif "/screenshot/" in screenshot_path:
+            relative_path = f"screenshot/{screenshot_path.split('/screenshot/', 1)[-1]}"
+        else:
+            # httpx's screenshot_path_rel is relative to the screenshot directory.
+            relative_path = f"screenshot/{screenshot_path}"
+
+        storage_key = f"{project_id}/{task_id}/{relative_path}"
+        return storage_key if _is_valid_screenshot_file(ARTIFACTS_ROOT / storage_key) else None
 
     async def _persist_workflow_artifacts(
         self,
